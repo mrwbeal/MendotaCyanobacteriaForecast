@@ -1,0 +1,272 @@
+This file was created to keep a record of how CB data was partitioned from the original dataset into monthly averages. Methods follow the file FindCyanoData.txt
+
+Libraries
+```{r}
+library(dplyr)
+library(ggplot2)
+library(plyr)
+library(stringr)
+```
+
+Read in the Data
+```{r}
+CBdata<-read.csv("~/Desktop/PhD/Cyanobacteria_Data/CB_raw_data.csv")
+
+#Trout Lake CB data
+#CBdata <- read.csv("~/Desktop/PhD/Ideas/Trout Lake Station/tl_phyto.csv")
+
+#2018 Cyanobacteria data
+#CBdata<-read.csv("~/Desktop/PhD/Cyanobacteria_Data/cb_2020.csv")
+tail(CBdata)
+```
+
+Filter for mendota
+
+```{r}
+cbme <- CBdata[CBdata$lakeid=="ME",]
+cbme <- cbme[cbme$division=="Cyanophyta",]
+cbme
+
+```
+
+JJA
+
+```{r}
+jja_cbme<-cbme %>% subset(str_detect(sampledate, "-06-") | str_detect(sampledate, "-07-") | str_detect(sampledate, "-08-"))
+
+#Get biomass and cells/ml
+jja_cbme<-jja_cbme[,c(3,4,12,14)]
+#jja_cbme<-jja_cbme[,c(2,3,11,13)]
+
+jja_cbme
+
+#Get total biomass for the year
+jja_biomass<-aggregate(jja_cbme$biomass_conc, by=list(jja_cbme$year4), sum)
+
+#Get sampling days per year
+count<-count(jja_cbme$sampledate)
+count$ones <-1
+sample_days<-data.frame(count,substr(count$x,1,4))
+sample_days_yr<-aggregate(sample_days$ones, by=list(sample_days$substr.count.x..1..4.),sum)
+
+#Divide biomass per year by sampling days per year 
+JJAcyano<-jja_biomass$x/sample_days_yr$x
+
+year<-jja_biomass$Group.1
+
+JJA_cb_data<-data.frame(year,JJAcyano)
+JJA_cb_data
+
+```
+
+
+JA biomass and cell count
+
+```{r}
+ja_cbme<-cbme %>% subset(str_detect(sampledate, "-07-") | str_detect(sampledate, "-08-"))
+
+#Get biomass and cells/ml
+ja_cbme<-ja_cbme[,c(3,4,12,14)]
+#ja_cbme<-ja_cbme[,c(2,3,11,13)]
+
+ja_cbme
+
+#Get total biomass for the year
+ja_biomass<-aggregate(ja_cbme$biomass_conc, by=list(ja_cbme$year4), sum)
+
+#Get sampling days per year
+count<-count(ja_cbme$sampledate)
+count$ones <- 1
+sample_days<-data.frame(count,substr(count$x,1,4))
+sample_days_yr<-aggregate(sample_days$ones, by=list(sample_days$substr.count.x..1..4.),sum)
+
+#Divide biomass per year by sampling days per year 
+JAbiomass<-ja_biomass$x/sample_days_yr$x
+
+year<-ja_biomass$Group.1
+
+JA_cb_data<-data.frame(year,JAbiomass)
+JA_cb_data
+
+
+#Get total cell count for the year
+ja_cell<-aggregate(ja_cbme$cells_per_ml, by=list(ja_cbme$year4), sum)
+
+#Get sampling days per year
+count<-count(ja_cbme$sampledate)
+count$ones <- 1
+sample_days<-data.frame(count,substr(count$x,1,4))
+sample_days_yr<-aggregate(sample_days$ones, by=list(sample_days$substr.count.x..1..4.),sum)
+
+#Divide biomass per year by sampling days per year 
+JAcells_ml<-ja_cell$x/sample_days_yr$x
+
+JA_cb_data<-data.frame(JA_cb_data,JAcells_ml)
+JA_cb_data
+
+plot(JA_cb_data$JAbiomass,JA_cb_data$JAcells_ml)
+
+plot(JA_cb_data$year,JA_cb_data$JAbiomass, type = "l")
+plot(JA_cb_data$year,JA_cb_data$JAcells_ml, type = "l")
+
+```
+
+
+June biomass and cell count
+
+```{r}
+june_cbme<-cbme %>% subset(str_detect(sampledate, "-06-"))
+
+#Get biomass and cells/ml
+june_cbme<-june_cbme[,c(3,4,12,14)]
+#ja_cbme<-ja_cbme[,c(2,3,11,13)]
+
+june_cbme
+
+#Get total biomass for the year
+june_biomass<-aggregate(june_cbme$biomass_conc, by=list(june_cbme$year4), sum)
+
+#Get sampling days per year
+count<-count(june_cbme$sampledate)
+count$ones <- 1
+sample_days<-data.frame(count,substr(count$x,1,4))
+sample_days_yr<-aggregate(sample_days$ones, by=list(sample_days$substr.count.x..1..4.),sum)
+
+#Divide biomass per year by sampling days per year 
+Jbiomass<-june_biomass$x/sample_days_yr$x
+
+year<-june_biomass$Group.1
+
+J_cb_data<-data.frame(year,Jbiomass)
+J_cb_data
+
+
+#Get total cell count for the year
+june_cell<-aggregate(june_cbme$cells_per_ml, by=list(june_cbme$year4), sum)
+
+#Get sampling days per year
+count<-count(june_cbme$sampledate)
+count$ones <- 1
+sample_days<-data.frame(count,substr(count$x,1,4))
+sample_days_yr<-aggregate(sample_days$ones, by=list(sample_days$substr.count.x..1..4.),sum)
+
+#Divide biomass per year by sampling days per year 
+Jcells_ml<-june_cell$x/sample_days_yr$x
+
+J_cb_data<-data.frame(J_cb_data,Jcells_ml)
+J_cb_data
+
+plot(J_cb_data$Jbiomass,J_cb_data$Jcells_ml)
+
+plot(J_cb_data$year,J_cb_data$Jbiomass, type = "l")
+plot(J_cb_data$year,J_cb_data$Jcells_ml, type = "l")
+
+
+cor.test(J_cb_data$Jbiomass,JA_cb_data$JAbiomass[-4]) #look at correlation b/w June and July-August
+
+JA_cb_data<-JA_cb_data[-4,] #remove 1998, look to next chunk for MEI values
+cor.test(J_cb_data[posJ,]$Jbiomass,JA_cb_data[posJ,]$JAbiomass,method = "spearman")
+cor.test(J_cb_data[negJ,]$Jbiomass,JA_cb_data[neg,]$JAbiomass,method="spearman")
+
+cor.test(J_cb_data[posJ,]$Jbiomass,JA_cb_data[posJ,]$JAbiomass,method = "pearson")
+cor.test(J_cb_data[negJ,]$Jbiomass,JA_cb_data[neg,]$JAbiomass,method="pearson")
+```
+
+
+
+Correlations between cells_ml and predictors
+
+
+```{r}
+basedata<-read.csv("~/Desktop/PhD/Ideas/June Forecast/june_basedata.csv")
+basedata$cells_ml <- JA_cb_data$JAcells_ml
+df<-read.csv("~/Desktop/PhD/Ideas/SST/sst_mei.csv")
+basedata$mei <- df$MEI
+
+pos<-basedata$MEI>=0
+neg<-basedata$MEI<0
+
+posJ<-basedata$MEI[-4]>=0 #This is for comparing June cb to JA cb, June cb is missing 1998
+negJ<-basedata$MEI[-4]<0
+
+
+cells_ml_cors <- data.frame("Predictor"="",
+                       "Pearson_corrs"=NA,
+                       "Pearson_pvals"=NA,
+                       "Spearman_corrs"=NA,
+                       "Spearman_pvals"=NA,
+                       "Nino Phase"=NA)
+
+#Apply index to data
+pos<-basedata[pos, ]
+neg<-basedata[neg, ]
+
+names<-names(pos)
+
+for (i in 1:ncol(pos)) {
+  pear <- cor.test(pos$cells_ml, pos[ ,i] , method="pearson")
+  spear <- cor.test(pos$cells_ml, pos[ ,i], method="spearman")
+cells_ml_cors <- rbind(cells_ml_cors, data.frame("Predictor"=names[i], "Pearson_corrs"=pear$estimate, "Pearson_pvals"=pear$p.value, "Spearman_corrs"=spear$estimate, "Spearman_pvals"=spear$p.value, "Nino Phase"="positive"))
+}
+
+
+for (i in 1:ncol(neg)) {
+  pear <- cor.test(neg$cells_ml, neg[ ,i] , method="pearson")
+  spear <- cor.test(neg$cells_ml, neg[ ,i], method="spearman")
+cells_ml_cors <- rbind(cells_ml_cors, data.frame("Predictor"=names[i], "Pearson_corrs"=pear$estimate, "Pearson_pvals"=pear$p.value, "Spearman_corrs"=spear$estimate, "Spearman_pvals"=spear$p.value, "Nino Phase"="negative"))
+}
+
+remove(cells_ml_cors)
+```
+
+Monthly Climatology
+
+
+```{r}
+cbme
+
+#create a month field
+cbme$month<-substr(cbme$sampledate,6,7)
+
+monthlycb<-aggregate(cbme$biomass_conc, by=list(cbme$month),sum)
+
+count<-count(cbme$sampledate)
+count$ones <- 1
+sample_days<-data.frame(count,substr(count$x,6,7))
+sample_days_mn<-aggregate(sample_days$ones, by=list(sample_days$substr.count.x..6..7.),sum)
+
+cbclim<-monthlycb$x/sample_days_mn$x
+
+barplot(cbclim,ylim=c(0,5),names.arg = c("June","July","August"),ylab = "Cyanobacteria Biomass (mg/L)", density = c(100,10,10))
+
+sum(cbclim[c(2,3)])/sum(cbclim)
+cbme
+
+cb_06<-aggregate(cbme[cbme$month=="06",]$biomass_conc, by=list(cbme[cbme$month=="06",]$year4),sum)
+
+cb_07<-aggregate(cbme[cbme$month=="07",]$biomass_conc, by=list(cbme[cbme$month=="07",]$year4),sum)
+
+cb_08<-aggregate(cbme[cbme$month=="08",]$biomass_conc, by=list(cbme[cbme$month=="08",]$year4),sum)
+
+cb_06<-data.frame(c(cb_06$Group.1,1998),c(cb_06$x,NA))
+cb_06<-cb_06[order(cb_06$c.cb_06.Group.1..1998.),]
+
+cb_06$month <- "AJune"
+cb_07$month <- "BJuly"
+cb_08$month <- "CAugust"
+
+bp<-data.frame("biomass_conc"=NA,"month"=NA)
+bp[1:23,1] <- cb_06[2]
+bp[1:23,2] <- cb_06[3]
+bp[24:46,1] <- cb_07[2]
+bp[24:46,2] <- cb_07[3]
+bp[47:69,1] <- cb_08[2]
+bp[47:69,2] <- cb_08[3]
+
+bp
+boxplot(bp$biomass_conc ~ bp$month,
+        data = cbme,names=(c("June","July","August")),ylab="Cyanobacteria Biomass (mg/L)")
+```
+
+
+

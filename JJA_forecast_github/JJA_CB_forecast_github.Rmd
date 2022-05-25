@@ -1,0 +1,952 @@
+---
+title: "JJA Cyanobacteria Biomass Forecast"
+author: "Max Beal"
+date: "5/25/2021"
+output: pdf_document
+---
+
+Past Predictors:
+2019 - Extreme Events (>25mm), Discharge at Hwy 113 (cfs), Sea Surface Temperatures (C)
+2020 - Extreme Events (>25mm), Discharge at Hwy 113 (cfs), May equatorial pacific SLP (mb)
+2021 - Extreme Events (>25mm), Discharge at Hwy 113 (cfs), Sea Surface Temperatures (C)
+
+Libraries
+```{r Libraries}
+library(matlib)
+library(fitdistrplus)
+library(dataRetrieval) 
+library(ggplot2)
+library(dataRetrieval)
+library(dplyr)
+library(psych)
+library(verification)
+```
+
+
+```{r Bryan's Model Code}
+#rm(list = ls()) 
+#setwd("JA_forecast_github")
+
+#Data
+
+basedata<-read.csv(file="CbPreds_9518.csv",header=T)
+year = basedata$year
+basedata<-basedata[,-c(1,2)]
+
+
+disc<-basedata$dis #Discharge
+events<-basedata$EE1.6 #Precip events >1.57" or 40mm
+temp <-basedata$sst #SST
+phos <-basedata$phos #phosphorus load
+precip <- basedata$April_precip
+
+#impute phos with discharge, phosphorus regression
+PD_lm<-lm(basedata$phos~basedata$dis)
+phos_pred<-predict(PD_lm,data.frame(basedata$phos))
+phos[3] <- phos_pred[3]
+
+cyano<-basedata$JJAcyano #Dependent variable
+
+#generate the zscore for each variable
+n<-length(cyano)
+mamdisc<-scale(disc,center = TRUE,scale = TRUE)
+events<-scale(events,center = TRUE,scale = TRUE)
+sst<-scale(temp,center = TRUE,scale = TRUE) 
+phos<-scale(phos,center = TRUE,scale = TRUE) 
+precip <-scale(precip,center = TRUE,scale = TRUE)
+ones<-c(rep(1,length(cyano))) 
+
+
+index = seq(1,length(cyano)) #set up the index
+betasPCA_drop<-matrix(,nrow = 3,ncol = length(cyano))#create empty matrices for loop #SST CHANGE
+modelPCA_drop<-matrix(,nrow=1,ncol=length(cyano))
+
+
+#Determine number of PCs with eigenvalues >1
+  pca<-matrix(c(events,sst,mamdisc,precip,phos),nrow=length(cyano),ncol=4)
+  dependtpca<-cyano #returns every column of cyano but ncol=i
+  prim_drop<-prcomp(na.omit(pca))
+  coeffd<-prim_drop$rotation #egienvector
+  scored<-prim_drop$x #PC score
+  ##now get eigen values
+  e_pcad<-eigen(cov(pca))
+  latentd<-e_pcad$values
+  pcn<-0
+  for (j in seq(1,2)){#determine how many PCs should be used
+    if (latentd[j]>1){
+      pcn=pcn+1;
+    }
+      else{
+        pcn=pcn+0
+      }
+  }
+
+  
+data<-basedata[,c("JJAcyano","EE1.6","April_precip","dis","sst")]
+
+modelpreds <- c()
+index = seq(1,length(cyano)) #set up the index
+
+library(pls)
+for (i in 1:nrow(data)) {
+  ind<-index!=i
+  train<-data[ind,]
+  test <- data[!ind,]
+  pcr_model<-pcr(JJAcyano~., data = train,scale =TRUE, validation = "CV")
+  pred<-predict(pcr_model, test, ncomp = pcn)
+  modelpreds<-rbind(modelpreds,c(pred,year[!ind]))
+}
+
+modelPCA_drop<-modelpreds[,1]
+
+#Error metrics
+rsme<-sqrt(mean(cyano-t(modelPCA_drop))^2)
+err<-cyano-t(modelPCA_drop)
+verr<-as.vector(err)
+hist(verr)
+dist<-fitdist(verr,"norm") 
+plot(dist)
+summary(dist)
+muhat<-dist$estimate[1]
+sigmahat<-dist$estimate[2]
+distl<-fitdist(verr,"logis")
+plot(distl)
+summary(distl)
+lochat<-distl$estimate[1]
+shat<-distl$estimate[2]
+rfit<-function(n,r,p1,p2,fit){
+  mR<-matrix(,ncol = n,nrow = r)
+  for (j in seq(1,n)){
+    for (i in seq(1,r)){
+    mR[i,j]<-fit(1,p1,p2)#generate random normally distributed variables
+    }
+  }
+  return(mR)
+}
+r=100
+
+#For normal distribution
+set.seed(7)
+Rnorm<-rfit(n,r,muhat,sigmahat,rnorm)
+
+yhat<-matrix(rep(modelPCA_drop, each = r),ncol=n,nrow=r)
+yvarn<-yhat+Rnorm
+yvarn[yvarn<0]<-0
+
+cor.test(modelPCA_drop,basedata$JJAcyano)
+
+plot(modelPCA_drop,basedata$JJAcyano)
+
+cor.test(basedata$EE1.6,basedata$JJAcyano, method="spearman")
+
+```
+
+```{r Hindcast/RPSS/HSS}
+par(cex.axis=0.8) # is for x-axis
+h1<-boxplot(yvarn,names=c(1995:2018),outline = FALSE, ylab = 'JJA Average Cyanobacteria Biomass (mg/L)',ylim=c(0,12), las=2)
+lower<-quantile(cyano, prob=.33)
+upper<-quantile(cyano, prob=.67)
+B=rep(lower,n) #33% quantile need to change this so it's not hard coded
+N=rep(upper,n) #67% quantile
+lines(seq(1,n),cyano,col="red",lwd=1.5)
+lines(seq(1,n),B,col="black")
+lines(seq(1,n),N,col="black")
+
+#RPSS
+
+test_stat<-shapiro.test(verr)
+test_stat
+
+#Observed
+cyanoObs<-matrix(0, nrow=n, ncol=3)
+for (i in seq(1,n)){
+  if (cyano[i]<=lower){
+    cyanoObs[i,1]<-1
+  }
+  else if (lower<=cyano[i]&&cyano[i]<=upper){
+    cyanoObs[i,2]<-1
+  }
+  else{
+    cyanoObs[i,3]<-1
+  }
+}
+#Predicted %
+percent<-matrix(0,ncol = 3, nrow = n)
+for (i in seq(1,n)){
+  yvarn_i<-yvarn[,i]
+  for (j in seq(1:100)){
+    if (yvarn_i[j]<=lower){
+     percent[i,1]<-percent[i,1]+1
+    }
+    else if (yvarn_i[j]>lower && yvarn_i[j]<upper){
+      percent[i,2]<-percent[i,2]+1
+    }
+    else{
+      percent[i,3]<-percent[i,3]+1
+    }
+  }
+}
+
+ncat<-3
+numB<-length(cyanoObs[,1][cyanoObs==1])
+numN<-length(cyanoObs[,2])
+numA<-length(cyanoObs[,3])
+
+perB<-(numB/n)
+perN<-(numN/n)
+perA<-(numA/n)
+
+dpercent<-percent/100 #forecasted
+
+calc_rps <- function(predicted, observed){
+  rps <- 0
+  for (i in 1:(length(predicted)-1)) {
+    sum_pred <- sum(predicted[1:i])
+    sum_obs <- sum(observed[1:i])
+    sq_err <- as.numeric((sum_pred-sum_obs)^2)
+    rps <- rps + sq_err
+  }
+  return(rps)
+}
+
+rps<-rep(0,n) #initial vecotr for model RPS values for each year
+rps_clim<-rep(0,n) #Same for climitology
+
+for (i in 1:n){
+  pred_vector<-as.vector(dpercent[i,])
+  obs_vector<-as.vector(cyanoObs[i,])
+  
+  #calculate RPS for one year
+  rps_temp<-calc_rps(pred_vector,obs_vector)
+  
+  #claculate rps for climatology
+  rps_clim_temp<-calc_rps(predicted = rep(0.333333,3),obs_vector)
+  
+  #store RPS values
+  rps[i]<-rps_temp
+  rps_clim[i]<-rps_clim_temp
+}
+
+rps<-rps/(ncat-1)
+mean_rps<-mean(rps)
+med_rps<-median(rps)
+
+rps_clim<-rps_clim/(ncat-1)
+mean_rps_clim<-mean(rps_clim)
+med_rps_clim<-median(rps_clim)
+
+rpss<-1-(mean_rps/mean_rps_clim)
+med_rpss<-1-(med_rps/med_rps_clim)
+
+
+#HSS
+
+percent_hold<-c(0,0,0)
+pred_m<-matrix(0,ncol = 3,nrow = n)
+for (i in seq(1:n)){
+  percent_hold<-percent[i,]
+  if (percent_hold[1]==max(percent_hold)){
+    pred_m[i,1]<-1
+  }
+  else if (percent_hold[2]==max(percent_hold)){
+    pred_m[i,2]<-1
+  }
+  else{
+    pred_m[i,3]<-1
+  }
+}
+
+##For creating the skill matrix
+pred_test<-c()
+for (i in 1:n){
+  percent_hold<-percent[i,]
+    if (percent_hold[1]==max(percent_hold)){
+    pred_test[i]<-lower-1
+  }
+  else if (percent_hold[2]==max(percent_hold)){
+    pred_test[i]<-lower+1
+  }
+  else{
+    pred_test[i]<-upper+1
+  }
+}
+
+year = c(1995:2018)
+
+observed_df<-data.frame(year = year[1:n],obs = cyano[1:n])
+predicted_df<-data.frame(year = year[1:n], pred = pred_test)
+breaks<-c(0,lower,upper, Inf)
+labels<-c("Low","Normal","High")
+bin_obs<-cut(observed_df$obs,breaks,include.lowest = T,right = F, labels=labels)
+summary(bin_obs)
+bins_pred <- cut(predicted_df$pred, breaks, include.lowest = T, right=FALSE, labels=labels)
+summary(bins_pred)
+
+#create contingency table
+observed_df$obs_bins<-bin_obs
+observed_df$pred_bins<-bins_pred
+skill_matrix<-with(observed_df, table(obs_bins, pred_bins))
+skill_matrix
+
+observed_df
+
+multi.cont(with(observed_df, table(pred_bins, obs_bins)))
+
+hit_hold<-abs(cyanoObs-pred_m)
+miss<-sum(hit_hold)/2
+hit<-n-miss
+expt_hit<-n/3
+HSS<-(hit-expt_hit)/(n-expt_hit)
+paste("HSS: ",HSS)
+paste("RPSS: ",med_rpss)
+
+
+```
+
+Beach Closure Hindcast Model
+
+```{r Beach Closure Hindcast Model}
+setwd("JJA_forecast_github")
+
+
+basedata<-read.csv("~/Desktop/PhD/Forecast Coding/BeachPreds_0520.csv")
+Beaches = c("James Madison", "Tenney Park", "Warner")
+Predictands = c("Days.closed", "Periods.closed")
+
+Beach = Beaches[3] #1 = JM, 2=T, 3=W
+Predictand = Predictands[2] #1 = days closed, 2 = periods closed
+
+basedata<-basedata[basedata$Beach==Beach,]
+
+disc<-basedata[,"dis"] #Discharge
+precip<-basedata[,"EE"] #Precip events >1"
+phos<-basedata[,"phos"] #Phosphorus
+sst<-basedata[,"sst"] #SSt
+closed<-basedata[,Predictand] #Dependent variable
+
+#generate the zscore for each variable
+mamdisc<-scale(disc,center = TRUE,scale = TRUE)
+events<-scale(precip,center = TRUE,scale = TRUE)
+phos<-scale(phos,center = TRUE,scale = TRUE)
+ones<-c(rep(1,length(closed))) 
+#build the independent matrix
+rhsvar<-matrix(c(ones,mamdisc,events),nrow=length(closed),ncol=3)
+n<-length(closed)
+m<-mean(closed)
+
+cor.test(closed,events)
+cor.test(closed,mamdisc)
+cor.test(closed,sst)
+cor.test(closed,phos)
+
+
+
+################Beach Forecast Code###############################
+pca<-matrix(c(mamdisc,events,phos),nrow=n,ncol=3)
+prim<-prcomp(pca)
+summary(prim)
+coeff<-prim$rotation #egienvector
+score<-prim$x #PC score
+#now get eigen values
+e_pca<-eigen(cov(pca))
+latent<-e_pca$values
+
+#Now using only the first PC
+rhsvarPC1<- matrix(c(ones,score),nrow=n,ncol=(2))
+betasPC1<-inv(crossprod(rhsvarPC1))%*%t(rhsvarPC1)%*%closed
+model_PC1<-rhsvarPC1%*%betasPC1
+
+plot(c(2005:2020),model_PC1,type = "l",xlim =c(2005,2020), ylim =c(0,20),xlab = "Years",ylab = "Beach Closure",main = "Using only the first PC as Predictor")+lines(c(2005:2020),closed,col="red")
+
+index = seq(1,n) #set up the index
+betasPCA_drop<-matrix(,nrow = 3,ncol = n)#create empty matrices for loop
+modelPCA_drop<-matrix(,nrow=1,ncol=n)
+
+for (i in seq(1,n)){ #drop one year for cross validation
+  ind<-index!=i #logical value where each column is true except ncol=i
+  dependtpca<-closed[ind] #returns every column of cyano but ncol=i
+  prim_drop<-prcomp(pca[ind,])
+  coeffd<-prim_drop$rotation #egienvector
+  scored<-prim_drop$x #PC score
+  ##now get eigen values
+  e_pcad<-eigen(cov(pca[ind,]))
+  latentd<-e_pcad$values
+  pcn<-0
+  for (j in seq(1,2)){#determine how many PCs should be used
+    if (latentd[j]>1){
+      pcn=pcn+1;
+    }
+      else{
+        pcn=pcn+0
+      }
+  }
+
+  ones<-c(rep(1,length(dependtpca)))#create new Ones vector
+  rhsvarPC_drop<-matrix(c(ones,scored[,pcn]),nrow=length(dependtpca),ncol=(2))
+  betasPCA_drop<-inv(crossprod(rhsvarPC_drop))%*%t(rhsvarPC_drop)%*%dependtpca #cycling through to determine betas
+  #Now we find the appropriate PC fot the dropped year for prediction
+  #First we find the detrended (mean subtracted) predictor value for the dropped year (i.e. precip)
+  detrend<-pca[i,]-colMeans(pca[ind,])
+  #Next, we multiply by the eigenvectors from the PCA
+  PC_drop<-detrend%*%coeffd #Finding all the PCs for the dropped year
+  rhsvarPC<-matrix(c(1,PC_drop[1:pcn]))
+  modelPCA_drop[i]<-t(rhsvarPC)%*%betasPCA_drop #find the cross validated model value
+}
+plot(c(2005:2020),modelPCA_drop,type = "l",xlim =c(2005,2020), ylim =c(0,20),xlab = "Years",ylab = "Beach Closure",main = "First PC as predictors, drop-one-year")+lines(c(2005:2020),closed,col="red")
+
+
+rsme<-sqrt(mean(closed-t(modelPCA_drop))^2)
+err<-closed-t(modelPCA_drop)
+verr<-as.vector(err)
+dist<-fitdist(verr,"norm") 
+plot(dist)
+summary(dist)
+muhat<-dist$estimate[1]
+sigmahat<-dist$estimate[2]
+
+rfit<-function(n,r,p1,p2,fit){
+  mR<-matrix(,ncol = n,nrow = r)
+  for (j in seq(1,n)){
+    for (i in seq(1,r)){
+    mR[i,j]<-fit(1,p1,p2)#generate random normally distributed variables
+    }
+  }
+  return(mR)
+}
+
+
+#For normal distribution
+Rnorm<-rfit(n,100,muhat,sigmahat,rnorm)
+
+
+yhat<-matrix(rep(modelPCA_drop, each = 100),ncol=n,nrow=100)
+yvarn<-yhat+Rnorm
+
+yvarn[yvarn<0]<-0
+
+cor.test(closed,events)
+
+```
+
+Update Correlations for 2018 biomass, 2020 beaches
+
+```{r Correlations}
+#discharge, precip, sst
+
+basedata<-read.csv(file="CbPreds_9518.csv",header=T)
+basedata<-basedata[,-c(1,6)]
+
+#Cyanobacteria biomass data through 2018
+cb<-read.csv("~/Desktop/PhD/Cyanobacteria_Data/CB_2018.csv")
+
+barplot(cb$JJAcyano, col="black",ylim=c(0,10),names.arg=cb$year, cex.names=0.8, ylab="JJA Average Cyandobacteria Biomass (mg/L)",las=2)
+
+#Beach closing data through 2020
+beaches <- read.csv("~/Desktop/PhD/Forecast Coding/beachclosings.csv")
+
+beaches<-beaches[order(beaches$year),]
+
+ggplot(data=beaches, aes(x=as.character(year), y=Days.closed, fill=Beach)) + 
+  geom_bar(stat="identity", position=position_dodge()) + 
+  theme_classic() +
+  scale_fill_manual(values=c('black','lightgray',"darkgray")) +
+  xlab("") + ylab("Days Closed") + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))
+
+ggplot(data=beaches, aes(x=as.character(year), y=Periods.closed, fill=Beach)) + 
+  geom_bar(stat="identity", position=position_dodge()) + 
+  theme_classic() +
+  scale_fill_manual(values=c('black','lightgray',"darkgray")) +
+  xlab("") + ylab("Periods Closed") + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))
+
+
+
+#Precipitation
+prcp <- read.csv("~/Desktop/PhD/Forecast Coding/prcp_95_20.csv")
+mamprcp<-prcp[substr(prcp$Date,7,7)==3|substr(prcp$Date,7,7)==4|substr(prcp$Date,7,7)==5,]
+mamprcp$PRCP<-as.numeric(mamprcp$PRCP)
+mamprcp$year<-substr(mamprcp$Date,1,4)
+
+
+precip_thresh<-seq(0,4,0.1)
+precip_thresh<-1.6
+cors<-c()
+
+
+for (i in 1:length(precip_thresh)) {
+  mamprcp$event <- as.numeric(mamprcp$PRCP>=precip_thresh[i])
+  mam_ee<-aggregate(mamprcp$event,by=list(mamprcp$year),sum, na.rm=T)
+  eecor<-cor.test(mam_ee$x[-c(25,26)],cb$JJAcyano,method="pearson")
+  cors<-rbind(cors,c(eecor$estimate,eecor$p.value,precip_thresh[i]))
+}
+
+plot(cors[,3],cors[,1],type="l", xlab="Precipitation threshold (in)",ylab="Pearson Correlation")
+
+cors
+
+testlm<-lm(basedata$JJAcyano~mam_ee$x[-c(25,26)])
+
+
+mamprcp<-prcp[substr(prcp$Date,7,7)==3,]
+mamprcp$PRCP<-as.numeric(mamprcp$PRCP)
+mamprcp$year<-substr(mamprcp$Date,1,4)
+mam_prcp<-aggregate(mamprcp$PRCP,by=list(mamprcp$year),sum, na.rm=T)
+cor.test(mam_prcp$x[-c(25,26)],cb$JJAcyano,method="pearson")
+plot(cb$JJAcyano,mam_prcp$x[-c(25,26)])
+
+
+
+#Sea surface temperature
+sst<-read.csv("~/Desktop/PhD/Forecast Coding/SST_95_21.csv")
+cor.test(sst$sst[-c(25,26,27)],cb$JJAcyano)
+cor.test(sst$sst[-c(25,26,27)],cb$JJAcyano,method="spearman")
+
+
+
+
+corr.test(basedata$JJAcyano,basedata$phos, method = "pearson")
+cor.test(basedata$JJAcyano, windsoragg[windsoragg$Group.1<=2018,"x"])
+
+
+```
+
+Update Beaches correlations
+```{r Updated Beach Correlations}
+set.seed(12)
+
+start.date <- "1995-03-01"
+end.date <- "2020-05-30"
+
+# Hwy 13 - 05427850
+# Windsor - 05427718
+
+#Discharge - HWY 113 only goes back to 2001 - apparently these years are interpolated from Windsor
+#get windsor and hwy 13, regress
+discharge <- readNWISdv(siteNumbers=c("05427850","05427718"),
+                     parameterCd = c("00060","00665"),
+                     startDate = start.date,
+                     endDate = end.date)
+mamdisc<-discharge[substr(discharge$Date,6,7) == "03"|substr(discharge$Date,6,7) == "04" |substr(discharge$Date,6,7) == "05",]
+
+mamdisc$year <- substr(mamdisc$Date,1,4)
+
+
+dis<- mamdisc %>% group_by(year, site_no) %>% summarise(disc = mean(X_00060_00003),
+                                                  phos = mean(X_00665_00003))
+
+
+
+#Discharge Regression
+dissub<-dis[dis$year>=2002,]
+windsordis<-dissub[dissub$site_no=="05427718",]
+hwy13dis<-dissub[dissub$site_no=="05427850",]
+
+dislm<-lm(hwy13dis$disc~windsordis$disc)
+summary(dislm)
+
+
+dissub<-dis[dis$year<2002,]
+windsordis<-dissub[dissub$site_no=="05427718",3]
+
+hwy13_95_01<-predict(dislm, windsordis)
+
+hwy13_95_01<-data.frame(hwy13_95_01)
+hwy13_alldis<-data.frame("dis"=c(hwy13_95_01$hwy13_95_01,hwy13dis$disc),"year"=c(1995:2020))
+
+
+#Phoshporus Regression
+dissub<-dis[dis$year>=2009,]
+windsordis<-dissub[dissub$site_no=="05427718",]
+hwy13dis<-dissub[dissub$site_no=="05427850",]
+
+dislm<-lm(hwy13dis$phos~windsordis$phos)
+summary(dislm)
+
+dissub<-dis[dis$year<2009,]
+windsordis<-dissub[dissub$site_no=="05427718",4]
+
+hwy13_95_01<-predict(dislm, windsordis)
+
+hwy13_95_01<-data.frame(hwy13_95_01)
+hwy13_allphos<-data.frame("phos"=c(hwy13_95_01$hwy13_95_01,hwy13dis$phos),"year"=c(1995:2020))
+
+hwy13<-merge(hwy13_allphos,hwy13_alldis, by="year")
+
+
+#Precipitation - Extreme Events
+prcp <- read.csv("~/Desktop/PhD/Forecast Coding/prcp_95_20.csv")
+mamprcp<-prcp[substr(prcp$Date,7,7)==3|substr(prcp$Date,7,7)==4|substr(prcp$Date,7,7)==5,]
+mamprcp$PRCP<-as.numeric(mamprcp$PRCP)
+mamprcp$year<-substr(mamprcp$Date,1,4)
+mamprcp$event <- as.numeric(mamprcp$PRCP>=1)
+mam_ee<-aggregate(mamprcp$event,by=list(mamprcp$year),sum, na.rm=T)
+
+precip_thresh<-seq(0,4,0.1)
+cors<-data.frame("Beach"=NA,"Ecor"=NA,"Epval"=NA,"precip_thresh"=NA)
+for (i in 1:length(precip_thresh)) {
+  mamprcp$event <- as.numeric(mamprcp$PRCP>=precip_thresh[i])
+  mam_ee<-aggregate(mamprcp$event,by=list(mamprcp$year),sum, na.rm=T)
+  beachesdata_2020<-cbind(hwy13,"EE"=mam_ee[,2],"sst"=sst[-27,2])
+  beachdf<-merge(beaches, beachesdata_2020, by="year")
+  eecor<-beachdf %>% group_by(Beach) %>% summarise(Ecor = corr.test(Days.closed,EE)$r, #Days or Periods
+                                                  Epval = corr.test(Days.closed,EE)$p) #Days of Periods
+  cors<-rbind(cors,cbind(eecor,"precip_thresh"=precip_thresh[i]))
+}
+
+EEcorplot<-ggplot(data=cors, aes(x=precip_thresh, y=Ecor, color=Beach)) + 
+  geom_line(stat="identity", position=position_dodge()) + 
+  theme_classic() + ggtitle("Periods Closed") +xlab("Precipitation Threshold (in)") + ylab("Pearson Correlation")
+
+EEcorplot #1.6 best cutoff
+
+#Precipitation - Extreme Events
+prcp <- read.csv("~/Desktop/PhD/Forecast Coding/prcp_95_20.csv")
+mamprcp<-prcp[substr(prcp$Date,7,7)==3|substr(prcp$Date,7,7)==4|substr(prcp$Date,7,7)==5,]
+mamprcp$PRCP<-as.numeric(mamprcp$PRCP)
+mamprcp$year<-substr(mamprcp$Date,1,4)
+mamprcp$event <- as.numeric(mamprcp$PRCP>=1.6)
+mam_ee<-aggregate(mamprcp$event,by=list(mamprcp$year),sum, na.rm=T)
+
+
+#Precipitation - Total
+prcp <- read.csv("~/Desktop/PhD/Forecast Coding/prcp_95_20.csv")
+mamprcp<-prcp[substr(prcp$Date,7,7)==4,]
+mamprcp$PRCP<-as.numeric(mamprcp$PRCP)
+mamprcp$year<-substr(mamprcp$Date,1,4)
+april_precip<-aggregate(mamprcp$PRCP,by=list(mamprcp$year),sum, na.rm=T)
+
+
+#Sea surface temperature
+sst<-read.csv("~/Desktop/PhD/Forecast Coding/SST_95_21.csv")
+
+#Pull together updated beach closing predictors (through 2020)
+beachesdata_2020<-cbind(hwy13,"EE"=mam_ee[,2],"sst"=sst[-27,2], "AprilPrecip"=april_precip[,2])
+
+beachdf<-merge(beaches, beachesdata_2020, by="year")
+biomassdf<-merge(cb, beachesdata_2020, by="year")
+
+
+
+days<-beachdf %>% group_by(Beach) %>% summarise(Pcor = corr.test(Days.closed,phos)$r,
+                                          Ppval = corr.test(Days.closed,phos)$p,
+                                          Dcor = corr.test(Days.closed,dis)$r,
+                                          Dpval = corr.test(Days.closed,dis)$p,
+                                          Ecor = corr.test(Days.closed,EE)$r,
+                                          Epval = corr.test(Days.closed,EE)$p,
+                                          Scor = corr.test(Days.closed, sst)$r,
+                                          Spval = corr.test(Days.closed,sst)$p,
+                                          APcor = corr.test(Days.closed, AprilPrecip)$r,
+                                          APpval = corr.test(Days.closed,AprilPrecip)$p)
+
+periods<-beachdf %>% group_by(Beach) %>% summarise(Pcor = corr.test(Periods.closed,phos)$r,
+                                          Ppval = corr.test(Periods.closed,phos)$p,
+                                          Dcor = corr.test(Periods.closed,dis)$r,
+                                          Dpval = corr.test(Periods.closed,dis)$p,
+                                          Ecor = corr.test(Periods.closed,EE)$r,
+                                          Epval = corr.test(Periods.closed,EE)$p,
+                                          Scor = corr.test(Periods.closed, sst)$r,
+                                          Spval = corr.test(Periods.closed,sst)$p,
+                                          APcor = corr.test(Periods.closed, AprilPrecip)$r,
+                                          APpval = corr.test(Periods.closed,AprilPrecip)$p)
+#write.csv(biomassdf,"~/Desktop/PhD/Forecast Coding/CbPreds_9518.csv")
+#write.csv(beachdf,"~/Desktop/PhD/Forecast Coding/BeachPreds_0520.csv")
+
+
+
+###########################updated hindcast model#######################################
+
+#Choose days (p = 1) or periods (p = 2)
+p = 2
+predict<-c("Days.closed","Periods.closed")
+
+#Get predictors for each beach
+days_predictors<-days[,c(3,5,7,9)]<0.05
+periods_predictors<-periods[,c(3,5,7,9)]<0.05
+
+beachnames <- days$Beach
+Beach_Preds <- data.frame("Predictions"=NA,"Observed"=NA,"Beach"=NA,"year"=NA)
+forecast_percent <- data.frame("Beach"=NA,"AboveNormal"=NA,"Normal"=NA)
+
+#Run for each of the three beaches with the same set of predictors
+for (k in 1:nrow(days)) {
+
+df<-beachdf[beachdf$Beach==beachnames[k],c(5:8)]
+
+# if (p==1) {
+#   pred_df<-df[,days_predictors[j,]]
+# } else {pred_df<-df[,periods_predictors[j,]]}
+
+if (p==1) {
+  pred_df<-df[,which(colSums(days_predictors)>=1)]
+} else {pred_df<-pred_df<-df[,which(colSums(periods_predictors)>=1)]}
+
+Predictand <- beachdf[beachdf$Beach==beachnames[k],predict[p]]
+
+pred_df<-scale(pred_df, center = T)
+
+pca<-as.matrix(pred_df)
+prim<-prcomp(pca, scale=TRUE,center = TRUE)
+coeff<-prim$rotation #egienvector
+score<-prim$x #PC score
+#now get eigen values
+e_pca<-eigen(cov(pca))
+latent<-e_pca$values
+
+closed<-Predictand #Dependent variable
+ones<-c(rep(1,length(closed))) 
+#build the independent matrix
+n<-length(closed)
+m<-mean(closed)
+
+index = seq(1,n) #set up the index
+betasPCA_drop<-matrix(,nrow = 3,ncol = n)#create empty matrices for loop
+modelPCA_drop<-matrix(,nrow=1,ncol=n)
+
+for (i in seq(1,n)){ #drop one year for cross validation
+  ind<-index!=i #logical value where each column is true except ncol=i
+  dependtpca<-closed[ind] #returns every column of cyano but ncol=i
+  prim_drop<-prcomp(pca[ind,])
+  coeffd<-prim_drop$rotation #egienvector
+  scored<-prim_drop$x #PC score
+  ##now get eigen values
+  e_pcad<-eigen(cov(pca[ind,]))
+  latentd<-e_pcad$values
+  pcn<-0
+  for (j in seq(1,2)){#determine how many PCs should be used
+    if (latentd[j]>1){
+      pcn=pcn+1;
+    }
+      else{
+        pcn=pcn+0
+      }
+  }
+  
+  if (pcn==0) {
+    pcn=1
+  }
+
+  ones<-c(rep(1,length(dependtpca)))#create new Ones vector
+  rhsvarPC_drop<-matrix(c(ones,scored[,pcn]),nrow=length(dependtpca),ncol=(2))
+  betasPCA_drop<-inv(crossprod(rhsvarPC_drop))%*%t(rhsvarPC_drop)%*%dependtpca #cycling through to determine betas
+  #Now we find the appropriate PC fot the dropped year for prediction
+  #First we find the detrended (mean subtracted) predictor value for the dropped year (i.e. precip)
+  detrend<-pca[i,]-colMeans(pca[ind,])
+  #Next, we multiply by the eigenvectors from the PCA
+  PC_drop<-detrend%*%coeffd #Finding all the PCs for the dropped year
+  rhsvarPC<-matrix(c(1,PC_drop[1:pcn]))
+  modelPCA_drop[i]<-t(rhsvarPC)%*%betasPCA_drop #find the cross validated model value
+  }
+hold<-data.frame("Predictions"=t(modelPCA_drop),
+           "Observed"=beachdf[beachdf$Beach==beachnames[k],predict[p]],
+           "Beach"=beachnames[k],
+           "year"=beachdf[beachdf$Beach==beachnames[k],"year"])
+Beach_Preds<-rbind(Beach_Preds,hold)
+
+
+
+rsme<-sqrt(mean(closed-t(modelPCA_drop))^2)
+err<-closed-t(modelPCA_drop)
+verr<-as.vector(err)
+dist<-fitdist(verr,"norm") 
+plot(dist)
+summary(dist)
+muhat<-dist$estimate[1]
+sigmahat<-dist$estimate[2]
+
+rfit<-function(n,r,p1,p2,fit){
+  mR<-matrix(,ncol = n,nrow = r)
+  for (j in seq(1,n)){
+    for (i in seq(1,r)){
+    mR[i,j]<-fit(1,p1,p2)#generate random normally distributed variables
+    }
+  }
+  return(mR)
+}
+
+#For normal distribution
+Rnorm<-rfit(n,100,muhat,sigmahat,rnorm)
+yhat<-matrix(rep(modelPCA_drop, each = 100),ncol=n,nrow=100)
+yvarn<-yhat+Rnorm
+yvarn[yvarn<0]<-0
+
+Beach_Preds<-na.omit(Beach_Preds)
+
+if (k ==1) {BeachDist<-list(yvarn)} else {BeachDist[[k]]<-yvarn}
+
+  for (m in 1:ncol(BeachDist[[k]])) {
+  above<-(mean(as.numeric(BeachDist[[k]][,m]>=mean(Predictand)))*100)
+  below=100-above
+  forecast_percent<-rbind(forecast_percent,c(beachnames[k],above,below))
+  }
+
+}
+
+forecast_percent<-na.omit(forecast_percent)
+
+for (k in 1:3) {
+    Beach_Preds[Beach_Preds$Beach==beachnames[k],"AboveN"]<-Beach_Preds[Beach_Preds$Beach==beachnames[k],"Observed"]>=mean(Predictand)
+}
+
+
+forecast_pct_plot<-cbind(forecast_percent,"year"=beachdf[order(beachdf$Beach),"year"])
+
+forecast_pct_plot[,c(2)] <- as.numeric(forecast_pct_plot[,c(2)])
+forecast_pct_plot[,c(3)] <- as.numeric(forecast_pct_plot[,c(3)])
+
+#Get y coord for observed points in the barplot
+for (i in 1:3) {
+  hold<-forecast_percent[forecast_percent$Beach==beachnames[i],]
+  hold2<-Beach_Preds[Beach_Preds$Beach==beachnames[i],]
+  for (o in 1:nrow(forecast_percent[forecast_percent$Beach==beachnames[i],])) {
+   if (as.numeric(hold2[o,"AboveN"])==TRUE) {
+ forecast_percent[forecast_percent$Beach==beachnames[i],4][o] <-as.numeric(forecast_percent[forecast_percent$Beach==beachnames[i],2][o])/2 +as.numeric(forecast_percent[forecast_percent$Beach==beachnames[i],3][o]) # Points for correct 
+    } else {
+ forecast_percent[forecast_percent$Beach==beachnames[i],4][o] <-as.numeric(forecast_percent[forecast_percent$Beach==beachnames[i],3][o])/2 # Points for correct 
+   }
+  }
+}
+
+for (i in 1:3) {
+x=c(1:nrow(forecast_pct_plot[forecast_pct_plot$Beach==beachnames[i],]))
+df.bar<-barplot(t(as.matrix(forecast_pct_plot[forecast_pct_plot$Beach==beachnames[i],c(3,2)])),     col=c("gray16","gray50"), border="white",main=beachnames[i], ylab="Probability (%)", names.arg=forecast_pct_plot[forecast_pct_plot$Beach==beachnames[i],"year"],legend.text=F, ylim=c(0,100))
+opar =par(oma = c(0,0,0,0), mar = c(0,0,0,0), new = TRUE)
+legend(x = "bottom", legend = c("Normal","Above Normal"), fill = c("gray16","gray50"), bty = "n", ncol = 2, inset= -0.25)
+par(opar) # reset par
+
+points(x = df.bar, y = as.numeric(forecast_percent[forecast_percent$Beach==beachnames[i],4]), col="white",pch=8) # Points for correct 
+
+}
+
+
+
+plot(c(2005:2020),modelPCA_drop,type = "l",xlim =c(2005,2020), ylim =c(0,20),xlab = "Years",ylab = "Beach Closure",main = "First PC as predictors, drop-one-year")+lines(c(2005:2020),closed,col="red") + lines(c(2005:2020),rep(mean(Predictand),length(modelPCA_drop)))
+
+basedata
+beachdf
+Beach_Preds
+
+```
+
+Skill Scores (RPSS, HSS, pearson) for beaches
+
+```{r Skill scores beaches}
+
+forecast_percent[,2]<-as.numeric(forecast_percent[,c(2)])
+forecast_percent[,3]<-as.numeric(forecast_percent[,c(3)])
+
+Skillscores <- data.frame(Beach=NA,RPSS=NA, HSS=NA, Pearson=NA)
+
+for (j in 1:3) {
+percent<- as.matrix(forecast_percent[forecast_percent$Beach==beachnames[j],c(3,2)],ncol=2)
+closed <- Beach_Preds[Beach_Preds$Beach==beachnames[j],"Observed"]
+n<-length(closed)
+m<-mean(closed)
+
+ncat<-2
+rps_concat<-matrix(,ncol = 1,nrow = n)
+rpss_concat<-matrix(,ncol = 1,nrow = n)
+closeAvg<-c()
+
+for (i in seq(1,n)){
+  if (closed[i]<=m){
+    closeAvg[i]<-1
+  }
+  else{
+    closeAvg[i]<-0
+  }
+}
+
+numAvg<-length(closeAvg[closeAvg==1])
+numAb<-length(closeAvg[closeAvg==0])
+
+perAvg<-(numAvg/n)
+perAb<-(numAb/n)
+perTot<-1
+
+dpercent<-percent/100 #change model here
+rps<-c()
+rpss<-c()
+for (i in seq(1,n)){
+  obs<-closeAvg[i]
+  if (obs==1){
+    pcum_obs<-c(1,1)
+    rps_clim<-(1/((ncat)-1))*(((perAvg-pcum_obs[1])^2)+((perTot-pcum_obs[2])^2))
+  }
+  else{
+    pcum_obs<-c(0,1)
+    rps_clim<-(1/((ncat)-1))*(((perAvg-pcum_obs[1])^2)+((perTot-pcum_obs[2])^2))
+  }
+  p_fcst<-dpercent[i,]
+  pcum_fcst<-cumsum(p_fcst)
+  
+  
+  rps = (1/((ncat)-1)) * sum((pcum_fcst - pcum_obs)^2)
+  rpss = 1 - (rps/rps_clim)
+  
+  rps_concat[i,]<-rps
+  rpss_concat[i,]<-rpss
+}
+
+median_rpss<-median(rpss_concat)
+
+
+#HSS
+
+forecast<-matrix(,ncol = 1,nrow = n)
+
+for (i in seq(1,n)){
+  if (dpercent[i,1]>dpercent[i,2]){
+    forecast[i,]<-1
+  }
+  else{
+    forecast[i,]<-0
+  }
+}
+obs<-closeAvg
+#Making the HMM
+a<-c(0) #Normal predicted, normal observed
+b<-c(0) #Normal predicted, above observed
+c<-c(0) #Above predicted, normal observed
+d<-c(0) #Above prediced, above observed
+
+for (i in seq(1,n)){
+  if (forecast[i,]==1 && obs[i]==1){
+    a=a+1
+  }
+  else if (forecast[i,]==1 && obs[i]==0){
+    b=b+1
+  }
+  else if (forecast[i,]==0 && obs[i]==1){
+    c=c+1
+  }
+  else{
+    d=d+1
+  }
+}
+hitmiss<-matrix(c(a,b,c,d),nrow = 2,ncol = 2)
+
+#Heidke Skill Score
+HSS<-2*(((a*d)-(b*c))/(((a+c)*(c+d))+((a+b)*(b+d))))
+
+cor<-cor.test(Beach_Preds[Beach_Preds$Beach==beachnames[j],"Observed"],Beach_Preds[Beach_Preds$Beach==beachnames[j],"Predictions"])
+
+Skillscores<-rbind(Skillscores,c(beachnames[j],median_rpss,HSS,cor$estimate))
+
+}
+
+
+Skillscores
+
+
+#Figure
+JM <- beachdf[beachdf$Beach==beachnames[1],]
+scaled_JM<-scale(JM[,c("Days.closed","dis","EE")],center=T)
+
+plot(JM$year,scaled_JM[,2], type="b",ylim=c(-3,3),xlab="",ylab="Normalized Values",lty=3) + lines(JM$year,scaled_JM[,3], lty=2, col="gray45",type = "b") + lines(JM$year,scaled_JM[,1], lwd=2,lty=1,type="b")
+legend(x = "bottom", legend = c("Days Closed","Discharge (cfs)","Extreme Events"), col = c("black","gray45"), bty = "n", ncol = 3, inset=0, lty=c(1,2,3),lwd=c(2,1,1))
+
+```
+
+
+

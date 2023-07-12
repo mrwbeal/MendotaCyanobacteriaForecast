@@ -22,16 +22,17 @@ library(ecmwfr)
 library(keyring)
 library(sp)
 library(shinythemes)
-
+#setwd("~/Desktop/PhD/Forecast Coding/")
 #Data Biomass
-setwd("~/Desktop/PhD/Forecast Coding/")
-basedata<-read.csv(file="CbPreds_9518.csv",header=T)
+#basedata<-read.csv(file="CbPreds_9518.csv",header=T)
+basedata<-read.csv(file="https://raw.github.com/mrwbeal/MendotaCyanobacteriaForecast/main/JJA_forecast_github/CbPreds_9518.csv",header=T)
 year = basedata$year
 basedata<-basedata[,-c(1,2)]
 cyano<-basedata$JJAcyano #Dependent variable
 
 #Data Beaches
-basedata_o<-read.csv("~/Desktop/PhD/Forecast Coding/BeachPreds_0520.csv")
+#basedata_o<-read.csv("~/Desktop/PhD/Forecast Coding/BeachPreds_0520.csv")
+basedata_o<-read.csv("https://raw.github.com/mrwbeal/MendotaCyanobacteriaForecast/main/JJA_forecast_github/BeachPreds_0520.csv")[-1,]
 Beaches = c("James Madison", "Tenney Park", "Warner")
 Predictands = c("Days.closed", "Periods.closed")
 
@@ -469,12 +470,11 @@ buildForecast<-function(year) {
   beach_predictions=data.frame("Percent"=rbind(aboveOut,nearOut),beachOut,metricOut,check.names=FALSE)
   beach_predictions$Category=substr(rownames(beach_predictions),1,1)
   beach_predictions<-beach_predictions %>% mutate(Category = str_replace_all(Category,c("N"="Near Normal","A"="Above Normal")))
+  beach_predictions<-beach_predictions %>% mutate(metricOut = gsub("[.]"," ",metricOut))
   
   BeachForecastPlot=ggplot(data=beach_predictions,aes(fill=Category,y=Percent,x=beachOut)) + 
-    geom_bar(stat="identity") + facet_grid(~metricOut) + xlab("")+ theme_bw() + scale_fill_manual(values=c("darkred","skyblue"))
-  
-  
-  
+    geom_bar(stat="identity") + facet_grid(~metricOut) + xlab("")+ theme_bw() + scale_fill_manual(values=c("darkred","skyblue")) + 
+    theme(text=element_text(size=14),legend.position="bottom")
   
   output=list(density_plot, tbl, forecast_percent, BeachForecastPlot)
   return(output)

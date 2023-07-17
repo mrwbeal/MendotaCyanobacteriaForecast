@@ -1,11 +1,9 @@
 #
-# This is a Shiny web application. You can run the application by clicking
-# the 'Run App' button above.
+# This is a Shiny web application to build cyanobacteria biomass forecasts for Lake Mendota
 #
 
 #Libraries
 library(shiny)
-library(matlib)
 library(fitdistrplus)
 library(dataRetrieval) 
 library(ggplot2)
@@ -15,16 +13,14 @@ library(psych)
 library(verification)
 library(lubridate)
 library(tidyverse)
-library(kableExtra)
 library(pls)
 library(raster)
 library(ecmwfr)
 library(keyring)
 library(sp)
 library(shinythemes)
-#setwd("~/Desktop/PhD/Forecast Coding/")
+
 #Data Biomass
-#basedata<-read.csv(file="CbPreds_9518.csv",header=T)
 basedata<-read.csv(file="https://raw.github.com/mrwbeal/MendotaCyanobacteriaForecast/main/JJA_forecast_github/CbPreds_9518.csv",header=T)
 year = basedata$year
 basedata<-basedata[,-c(1,2)]
@@ -225,7 +221,7 @@ buildForecast<-function(year) {
   
   #Put all predictors from current year together
   pca = rbind(basedata[,c("dis","EE1.6","sst","April_precip")],data.frame("dis"=disc,"EE1.6"=precip,"sst"=SST,"April_precip"=ap_precip))
-  forecast = data.frame("EE1.6"=precip,"April_precip"=ap_precip,"dis"=disc,"sst"=SST) #rm m31
+  forecast = data.frame("EE1.6"=precip,"April_precip"=ap_precip,"dis"=disc,"sst"=SST) 
   
   
   #####Biomass Forecast Code####
@@ -326,66 +322,54 @@ buildForecast<-function(year) {
       rhsvar<-matrix(c(ones,mamdisc,events),nrow=length(closed),ncol=3)
       n<-length(closed)
       m<-mean(closed)
-      
-      
-      
-      pca<-matrix(c(mamdisc,events),nrow=n,ncol=3)
-      prim<-prcomp(pca)
-      summary(prim)
-      coeff<-prim$rotation #egienvector
-      score<-prim$x #PC score
-      #now get eigen values
-      e_pca<-eigen(cov(pca))
-      latent<-e_pca$values
-      
-      #Now using only the first PC
-      rhsvarPC1<- matrix(c(ones,score),nrow=n,ncol=(2))
-      betasPC1<-inv(crossprod(rhsvarPC1))%*%t(rhsvarPC1)%*%closed
-      model_PC1<-rhsvarPC1%*%betasPC1
+      year = basedata$year
       
       
       index = seq(1,n) #set up the index
       betasPCA_drop<-matrix(,nrow = 3,ncol = n)#create empty matrices for loop
       modelPCA_drop<-matrix(,nrow=1,ncol=n)
       
-      for (i in seq(1,n)){ #drop one year for cross validation
-        ind<-index!=i #logical value where each column is true except ncol=i
-        dependtpca<-closed[ind] #returns every column of cyano but ncol=i
-        prim_drop<-prcomp(pca[ind,])
-        coeffd<-prim_drop$rotation #egienvector
-        scored<-prim_drop$x #PC score
-        ##now get eigen values
-        e_pcad<-eigen(cov(pca[ind,]))
-        latentd<-e_pcad$values
-        pcn<-0
-        for (j in seq(1,2)){#determine how many PCs should be used
-          if (latentd[j]>1){
-            pcn=pcn+1;
-          }
-          else{
-            pcn=pcn+0
-          }
+      #Determine number of PCs with eigenvalues >1
+      pca<-matrix(c(mamdisc,events),nrow=length(closed),ncol=4)
+      dependtpca<-closed #returns every column of cyano but ncol=i
+      prim_drop<-prcomp(na.omit(pca))
+      coeffd<-prim_drop$rotation #egienvector
+      scored<-prim_drop$x #PC score
+      ##now get eigen values
+      e_pcad<-eigen(cov(pca))
+      latentd<-e_pcad$values
+      pcn<-0
+      for (j in seq(1,2)){#determine how many PCs should be used
+        if (latentd[j]>1){
+          pcn=pcn+1;
         }
-        
-        ones<-c(rep(1,length(dependtpca)))#create new Ones vector
-        rhsvarPC_drop<-matrix(c(ones,scored[,pcn]),nrow=length(dependtpca),ncol=(2))
-        betasPCA_drop<-inv(crossprod(rhsvarPC_drop))%*%t(rhsvarPC_drop)%*%dependtpca #cycling through to determine betas
-        #Now we find the appropriate PC fot the dropped year for prediction
-        #First we find the detrended (mean subtracted) predictor value for the dropped year (i.e. precip)
-        detrend<-pca[i,]-colMeans(pca[ind,])
-        #Next, we multiply by the eigenvectors from the PCA
-        PC_drop<-detrend%*%coeffd #Finding all the PCs for the dropped year
-        rhsvarPC<-matrix(c(1,PC_drop[1:pcn]))
-        modelPCA_drop[i]<-t(rhsvarPC)%*%betasPCA_drop #find the cross validated model value
+        else{
+          pcn=pcn+0
+        }
       }
+      
+      data<-data.frame(closed,"dis"=mamdisc,"EE"=events)
+      
+      modelpreds <- c()
+      index = seq(1,length(closed)) #set up the index
+      
+      for (i in 1:nrow(data)) {
+        ind<-index!=i
+        train<-data[ind,]
+        test <- data[!ind,]
+        pcr_model<-pcr(closed~., data = train,scale =TRUE, validation = "CV")
+        pred<-predict(pcr_model, test, ncomp = pcn)
+        modelpreds<-rbind(modelpreds,c(pred,year[!ind]))
+      }
+      
+      modelPCA_drop<-modelpreds[,1]
+      
       
       
       rsme<-sqrt(mean(closed-t(modelPCA_drop))^2)
       err<-closed-t(modelPCA_drop)
       verr<-as.vector(err)
       dist<-fitdist(verr,"norm") 
-      plot(dist)
-      summary(dist)
       muhat<-dist$estimate[1]
       sigmahat<-dist$estimate[2]
       
@@ -413,24 +397,22 @@ buildForecast<-function(year) {
       
       forecastB = data.frame("dis"=disc,"EE"=precip)
       
-      #Add in predictors
       pca<-rbind(basedata[,c("dis","EE")],forecastB)
       pca<-scale(pca,center = TRUE,scale = TRUE)
       pca<-as.data.frame(pca)
-      pred<-prcomp(pca) #PCA on the zscore data
-      coeff19<-pred$rotation #egienvector
-      score19<-pred$x #PC score
-      e_pca<-eigen(cov(pca)) #now get eigen values
-      latent19<-e_pca$values
-      n19<-nrow(pca) #hardcoded
-      ones<-c(rep(1,n19))
-      score19<-score19[,1]
-      rhsvar19<-matrix(c(ones,score19),nrow = n19,ncol = 2)
-      model19<-rhsvar19%*%betasPC1
-      predval<-model19[n19,]
-      yhat19<-matrix(rep(predval, each = 100),ncol=1,nrow=100)
+      
+      forecastB=pca[nrow(pca),]
+      
+      pred<-predict(pcr_model, forecastB, ncomp = pcn)
+      predval = pred[1]
+      yhat19<-matrix(rep(PredVal, each = 100),ncol=1,nrow=100)
+      set.seed(12)
       Rnorm19<-rfit(1,100,muhat,sigmahat,rnorm)
-      yvar19<-yhat19+Rnorm19 #change model here
+      
+      yvar19<-yhat19+Rnorm19
+      sim<-yvar19
+      obs<-closed
+      
       
       N<-0
       A<-0
@@ -462,10 +444,12 @@ buildForecast<-function(year) {
       beachOut = rbind(beachOut,Beach)
       metricOut = rbind(metricOut,Predictand)
       
-      
     }
   }
   
+  #Prediction Table
+  beachtableinput = data.frame("Beach"=beachOut,"Metric"=metricOut,"Closure Prediction"=round(predOut,1),check.names = FALSE)
+  rownames(beachtableinput) <- NULL
   beach_predictions<-data.frame(aboveOut,nearOut,predOut,beachOut,metricOut,check.names = FALSE)
   beach_predictions=data.frame("Percent"=rbind(aboveOut,nearOut),beachOut,metricOut,check.names=FALSE)
   beach_predictions$Category=substr(rownames(beach_predictions),1,1)
@@ -476,7 +460,7 @@ buildForecast<-function(year) {
     geom_bar(stat="identity") + facet_grid(~metricOut) + xlab("")+ theme_bw() + scale_fill_manual(values=c("darkred","skyblue")) + 
     theme(text=element_text(size=14),legend.position="bottom")
   
-  output=list(density_plot, tbl, forecast_percent, BeachForecastPlot)
+  output=list(density_plot, tbl, forecast_percent, BeachForecastPlot,beachtableinput)
   return(output)
 } 
 
@@ -515,7 +499,7 @@ ui <- fluidPage(theme = shinytheme("united"),
         selectInput(
           inputId =  "year", 
           label = "Select time period:", 
-          choices = 2022:2023
+          choices = c("Select",2022:2023)
         ),
         
         DT::dataTableOutput("table")
@@ -527,7 +511,7 @@ ui <- fluidPage(theme = shinytheme("united"),
         
         tabsetPanel(type = "tabs",
                     tabPanel("Biomass Forecast", plotOutput("forecastPlot"),textOutput("biomass_category")),
-                    tabPanel("Beach Forecast", plotOutput("beachPlot")),
+                    tabPanel("Beach Forecast", plotOutput("beachPlot"), DT::dataTableOutput("beachtable")),
         )
       ) #end main panel
     
@@ -538,8 +522,13 @@ ui <- fluidPage(theme = shinytheme("united"),
 server <- function(input, output) {
   
   fcst<-reactive({
-    showModal(modalDialog("Downloading Data...", footer=NULL))
-    buildForecast(input$year)
+      if (input$year=="Select") {
+        
+      }
+      else{
+      showModal(modalDialog("Downloading Data...", footer=NULL))
+      buildForecast(input$year)
+      }
     })
   
   test <- reactive({
@@ -559,6 +548,10 @@ server <- function(input, output) {
     print(fcst()[[4]])
     removeModal()
   })
+  
+  output$beachtable <- DT::renderDataTable(DT::datatable({
+    print(fcst()[[5]],row.names=FALSE)
+  }))
   
   
   output$biomass_category <- renderText({ 

@@ -1,6 +1,6 @@
 #
 # This is a Shiny web application to build cyanobacteria biomass forecasts for Lake Mendota
-#
+# shiny::runGitHub('MendotaCyanobacteriaForecast', 'mrwbeal')
 
 #Libraries
 library(shiny)
@@ -15,10 +15,10 @@ library(lubridate)
 library(tidyverse)
 library(pls)
 library(raster)
-library(ecmwfr)
-library(keyring)
 library(sp)
 library(shinythemes)
+library(ncdf4)
+library(RCurl)
 
 #Data Biomass
 basedata<-read.csv(file="https://raw.github.com/mrwbeal/MendotaCyanobacteriaForecast/main/JJA_forecast_github/CbPreds_9518.csv",header=T)
@@ -129,56 +129,20 @@ buildForecast<-function(year) {
   
   #Extreme Events (>40 mm) data (Updated to 40 mm as of 2022) 
   #MRCC measures in inches (40 mm = 1.57 in)
-  wf_set_key(user="70432",key="ca1f80cf-213d-4758-9c79-e7a19dca9632",service="cds")
+  curlSetOpt(timeout = 200)
+  drca = read.csv('https://www.ncei.noaa.gov/data/global-historical-climatology-network-daily/access/USW00014837.csv')
+  drca=drca[,c(1:7)]
+  drca$YR = as.numeric(substr(drca$DATE,1,4))
+  drca$MN = as.numeric(substr(drca$DATE,6,7))
   
-  #ERA5 precip
-  request <- list(
-    product_type = "reanalysis",
-    variable = "total_precipitation",
-    year = as.character(year),
-    month = c("03", "04", "05"),
-    day = c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31"),
-    time= c('00:00', '01:00', '02:00',
-      '03:00', '04:00', '05:00',
-      '06:00', '07:00', '08:00',
-      '09:00', '10:00', '11:00',
-      '12:00', '13:00', '14:00',
-      '15:00', '16:00', '17:00',
-      '18:00', '19:00', '20:00',
-      '21:00', '22:00', '23:00'),
-    area = c(43.5, -89.8, 42.5, -89),
-    format = "netcdf",
-    dataset_short_name = "reanalysis-era5-single-levels",
-    target = "mamDCRAprecip.nc"
-  )
-  
-  ncfile <- wf_request(user = "70432",request = request, transfer = TRUE,  
-                       path = tempdir(),
-                       verbose = FALSE
-  )
-  
-  prcp=brick(ncfile)
-  prcp_mm = prcp*1000
-  
-  
-  DCRA=data.frame("lat"=43.1386, "lon"=-89.3369)
-  coordinates(DCRA) <- ~lon + lat
-  crs(DCRA) = crs(prcp_mm)
-  
-  prcp_dcra=raster::extract(prcp_mm,DCRA)
-  
-  
-  precip_dates = as.Date(substr(names(prcp_mm),2,11),format="%Y.%m.%d")
-  prcp_df=as.data.frame(prcp_dcra)
-  prcp_df=data.frame("precip_mm"=t(prcp_df),"date"=precip_dates)
-  prcp_daily=prcp_df %>% group_by(date) %>% summarize(dailysum = sum(precip_mm))
+  prcp_daily = drca %>% subset(YR==year & MN>=3 & MN<=5)
+  prcp_daily$mm=prcp_daily$PRCP/10
   
   #Extreme Events, greater than 40mm
-  precip = sum(as.numeric(prcp_daily$dailysum>40),na.rm=T)
+  precip = sum(as.numeric(prcp_daily$mm>40),na.rm=T)
   
   #April Precipitation
-  prcp_daily$mon=month(prcp_daily$date)
-  ap_precip=prcp_daily %>% filter(mon==4) %>% summarize(ap_precip=sum(dailysum))
+  ap_precip=prcp_daily %>% filter(MN==4) %>% summarize(ap_precip=sum(mm,na.rm=TRUE))
   mm_to_inches <- function(mm) {
     inches <- mm / 25.4
     return(inches)
@@ -188,36 +152,29 @@ buildForecast<-function(year) {
   
   #Sea Surface Temperature
   #Get SST data
-  request <- list(
-    product_type = "reanalysis",
-    variable = "sea_surface_temperature",
-    year =as.character(year),
-    month = c("03","04","05"),
-    day = c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31"),
-    time = c("00:00", "06:00", "12:00", "18:00"),
-    area = c(-10, -180, -20, 180),
-    format = "netcdf",
-    dataset_short_name = "reanalysis-era5-single-levels",
-    target = "mamsst.nc"
-  )
-  
-  ncfile <- wf_request(user = "70432",request = request, transfer = TRUE,  
-    path = tempdir(),
-    verbose = FALSE
-  )
-  
-  mamsst=raster(ncfile)
-  mamsst=mean(mamsst)
-  k_to_c <- function(kelvin) {
-    celsius <- kelvin - 273.15
-    return(celsius)
+  replace_year <- function(url, new_year) {
+    new_url <- gsub("\\d{6}", paste0("20",new_year), url)
+    return(new_url)
   }
-  mamsst=k_to_c(mamsst)
   
-  e = extent(-150,-125,-20,-10)
-  sst1=crop(mamsst,e)
+  #OpenDAP from IRI Columbia, get ERSSTv5
+  urlhold<-'http://iridl.ldeo.columbia.edu/SOURCES/.NOAA/.NCDC/.ERSST/.version5/.sst/T/%28Mar%202023%29%28May%202023%29RANGEEDGES/dods'
+  url=replace_year(urlhold,year)
   
-  SST=mean(values(sst1),na.rm=T)
+  nc_data = nc_open(url)
+  
+  lon <- ncvar_get(nc_data, "X", verbose = F)
+  lat <- ncvar_get(nc_data, "Y", verbose = F)
+  t <- ncvar_get(nc_data, "T")
+  sst <- ncvar_get(nc_data, "sst")
+  nc_close(nc_data)
+  
+  sstm = apply(sst, c(1,2), mean)
+  
+  latm = (lat >= -20) & (lat <= -10)
+  lonm = (lon >= 210) & (lon <= 235)
+  
+  SST=mean(sstm[lonm,latm],na.rm=T)
   
   #Put all predictors from current year together
   pca = rbind(basedata[,c("dis","EE1.6","sst","April_precip")],data.frame("dis"=disc,"EE1.6"=precip,"sst"=SST,"April_precip"=ap_precip))
@@ -521,13 +478,38 @@ ui <- fluidPage(theme = shinytheme("united"),
 ##### Define server logic ####
 server <- function(input, output) {
   
-  fcst<-reactive({
+  
+  observeEvent(input$year,{
       if (input$year=="Select") {
         
       }
       else{
       showModal(modalDialog("Downloading Data...", footer=NULL))
-      buildForecast(input$year)
+      fcst<-buildForecast(input$year)
+      
+      output$table <- DT::renderDataTable(DT::datatable({
+        fcst[[2]]
+      }))
+      
+      output$forecastPlot <- renderPlot({
+        print(fcst[[1]])
+        removeModal()
+      })
+      
+      output$beachPlot <- renderPlot({
+        print(fcst[[4]])
+        removeModal()
+      })
+      
+      output$beachtable <- DT::renderDataTable(DT::datatable({
+        print(fcst[[5]],row.names=FALSE)
+      }))
+      
+      
+      output$biomass_category <- renderText({ 
+        biomass_cat(fcst[[3]])
+      })
+      
       }
     })
   
@@ -535,30 +517,13 @@ server <- function(input, output) {
     input$year
   })
   
-  output$table <- DT::renderDataTable(DT::datatable({
-    fcst()[[2]]
-  }))
-    
-  output$forecastPlot <- renderPlot({
-      print(fcst()[[1]])
-      removeModal()
-    })
-  
-  output$beachPlot <- renderPlot({
-    print(fcst()[[4]])
-    removeModal()
+  #Stop the app timing out
+  autoInvalidate <- reactiveTimer(10000)
+  observe({
+    autoInvalidate()
+    cat(".")
   })
   
-  output$beachtable <- DT::renderDataTable(DT::datatable({
-    print(fcst()[[5]],row.names=FALSE)
-  }))
-  
-  
-  output$biomass_category <- renderText({ 
-    biomass_cat(fcst()[[3]])
-  })
-    
-
   
 }
 
